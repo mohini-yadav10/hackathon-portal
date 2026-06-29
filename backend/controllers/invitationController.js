@@ -195,3 +195,120 @@ exports.getPendingInvitations = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error retrieving pending invitations' });
     }
 };
+
+// @desc    Request to join a team (Student asks leader to invite them)
+// @route   POST /api/invitations/request
+// @access  Private
+exports.requestToJoin = async (req, res) => {
+    const { team_id } = req.body;
+    const userId = req.user.user_id;
+
+    if (!team_id) {
+        return res.status(400).json({ success: false, message: 'Please provide team_id' });
+    }
+
+    try {
+        // Find team
+        const [teams] = await db.query(
+            'SELECT leader_id, hackathon_id, team_name, status, team_size FROM Teams WHERE team_id = ?',
+            [team_id]
+        );
+        if (teams.length === 0) {
+            return res.status(404).json({ success: false, message: 'Team not found' });
+        }
+
+        const team = teams[0];
+
+        // Check if requester is already in a team for this hackathon
+        const [existingTeamCheck] = await db.query(
+            `SELECT tm.member_id FROM Team_Members tm
+             JOIN Teams t ON tm.team_id = t.team_id
+             WHERE tm.user_id = ? AND t.hackathon_id = ?`,
+            [userId, team.hackathon_id]
+        );
+        if (existingTeamCheck.length > 0) {
+            return res.status(400).json({ success: false, message: 'You are already in a team for this hackathon' });
+        }
+
+        // Check if team is closed
+        if (team.status === 'Closed') {
+            return res.status(400).json({ success: false, message: 'This team is closed' });
+        }
+
+        // Notify the team leader
+        const message = `Student "${req.user.name}" (${req.user.email}) has requested to join your team "${team.team_name}". Go to "My Team" to send them an invitation.`;
+        await db.query(
+            'INSERT INTO Notifications (user_id, message) VALUES (?, ?)',
+            [team.leader_id, message]
+        );
+
+        res.status(200).json({
+            success: true,
+            message: 'Join request sent to the team leader successfully!'
+        });
+    } catch (err) {
+        console.error('Request to join error:', err);
+        res.status(500).json({ success: false, message: 'Server error requesting to join team' });
+    }
+};
+
+// @desc    Get all invitations sent by a team (for leader to track)
+// @route   GET /api/invitations/team/:teamId
+// @access  Private
+exports.getTeamSentInvitations = async (req, res) => {
+    const { teamId } = req.params;
+    const userId = req.user.user_id;
+
+    try {
+        // Verify user is leader of the team
+        const [teams] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [teamId]);
+        if (teams.length === 0) {
+            return res.status(404).json({ success: false, message: 'Team not found' });
+        }
+        if (teams[0].leader_id !== userId) {
+            return res.status(403).json({ success: false, message: 'Only team leaders can view sent invitations' });
+        }
+
+        const [invitations] = await db.query(
+            `SELECT i.invitation_id, i.status, i.created_at, u.name AS receiver_name, u.email AS receiver_email
+             FROM Invitations i
+             JOIN Users u ON i.receiver_id = u.user_id
+             WHERE i.team_id = ?
+             ORDER BY i.created_at DESC`,
+            [teamId]
+        );
+
+        res.status(200).json({ success: true, count: invitations.length, data: invitations });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error retrieving sent invitations' });
+    }
+};
+
+// @desc    Cancel/Retract sent invitation (Leader only)
+// @route   DELETE /api/invitations/:id
+// @access  Private
+exports.cancelInvitation = async (req, res) => {
+    const invitationId = req.params.id;
+    const userId = req.user.user_id;
+
+    try {
+        const [invites] = await db.query('SELECT team_id FROM Invitations WHERE invitation_id = ?', [invitationId]);
+        if (invites.length === 0) {
+            return res.status(404).json({ success: false, message: 'Invitation not found' });
+        }
+
+        const [teams] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [invites[0].team_id]);
+        if (teams.length === 0 || teams[0].leader_id !== userId) {
+            return res.status(403).json({ success: false, message: 'Not authorized to cancel this invitation' });
+        }
+
+        await db.query('DELETE FROM Invitations WHERE invitation_id = ?', [invitationId]);
+        res.status(200).json({ success: true, message: 'Invitation cancelled successfully' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error cancelling invitation' });
+    }
+};
+
+

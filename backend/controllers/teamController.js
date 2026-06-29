@@ -1,52 +1,193 @@
 const db = require('../config/db');
+const bcrypt = require('bcryptjs');
 
-// @desc    Create a new team (using RegisterTeam Stored Procedure)
+// @desc    Create a new team (Direct entry of member details, no invitations)
 // @route   POST /api/teams
 // @access  Private
 exports.createTeam = async (req, res) => {
-    const { hackathon_id, team_name } = req.body;
+    const { hackathon_id, team_name, leader_details, members } = req.body;
     const leader_id = req.user.user_id;
 
-    if (!hackathon_id || !team_name) {
-        return res.status(400).json({ success: false, message: 'Please provide hackathon_id and team_name' });
+    if (!hackathon_id || !team_name || !leader_details) {
+        return res.status(400).json({ success: false, message: 'Please provide hackathon_id, team_name, and leader_details' });
     }
 
-    try {
-        // Check if user is already in a team for this hackathon
-        const [existing] = await db.query(
-            `SELECT tm.member_id FROM Team_Members tm 
-             JOIN Teams t ON tm.team_id = t.team_id 
-             WHERE tm.user_id = ? AND t.hackathon_id = ?`,
-            [leader_id, hackathon_id]
-        );
+    const connection = await db.getConnection();
 
-        if (existing.length > 0) {
+    try {
+        await connection.beginTransaction();
+
+        // 1. Fetch hackathon details and validate limit
+        const [hackathons] = await connection.query(
+            'SELECT max_team_size, title FROM Hackathons WHERE hackathon_id = ?',
+            [hackathon_id]
+        );
+        if (hackathons.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Hackathon not found' });
+        }
+        const max_team_size = hackathons[0].max_team_size;
+
+        const totalMemberCount = 1 + (members ? members.length : 0);
+        if (totalMemberCount > max_team_size) {
+            await connection.rollback();
             return res.status(400).json({ 
                 success: false, 
-                message: 'You are already in a team for this hackathon. You must leave that team first.' 
+                message: `Team size (${totalMemberCount}) exceeds the maximum limit of ${max_team_size} for this hackathon.` 
             });
         }
 
-        // Call stored procedure RegisterTeam(hackathon_id, leader_id, team_name, OUT team_id)
-        // First we register the team
-        await db.query('CALL RegisterTeam(?, ?, ?, @p_team_id)', [hackathon_id, leader_id, team_name]);
-        
-        // Fetch the output parameter
-        const [outRows] = await db.query('SELECT @p_team_id AS team_id');
-        const team_id = outRows[0].team_id;
+        // 2. Validate unique team name within the hackathon
+        const [existingTeam] = await connection.query(
+            'SELECT team_id FROM Teams WHERE hackathon_id = ? AND team_name = ?',
+            [hackathon_id, team_name]
+        );
+        if (existingTeam.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Team name must be unique within this hackathon' });
+        }
+
+        // 3. Compile all members list for duplicate validation
+        const allMembers = [
+            {
+                name: req.user.name,
+                email: req.user.email,
+                user_id: leader_id,
+                enrollment_number: leader_details.enrollment_number,
+                phone_number: leader_details.phone_number,
+                branch: leader_details.branch,
+                year: leader_details.year,
+                github_url: leader_details.github_url || null,
+                role: 'Leader'
+            }
+        ];
+
+        if (members && members.length > 0) {
+            members.forEach(m => {
+                allMembers.push({
+                    name: m.name,
+                    email: m.email,
+                    enrollment_number: m.enrollment_number,
+                    phone_number: m.phone_number,
+                    branch: m.branch,
+                    year: m.year,
+                    github_url: m.github_url || null,
+                    role: 'Developer'
+                });
+            });
+        }
+
+        // 4. Duplicate checks inside request
+        const emails = allMembers.map(m => m.email.toLowerCase());
+        const enrollments = allMembers.map(m => m.enrollment_number.toLowerCase());
+
+        if (new Set(emails).size !== emails.length) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Duplicate emails detected in team members list.' });
+        }
+
+        if (new Set(enrollments).size !== enrollments.length) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Duplicate enrollment numbers detected in team members list.' });
+        }
+
+        // 5. Check if any student already belongs to a team in this hackathon
+        // Check database for existing active team assignments for any of the emails
+        const [existingAssignments] = await connection.query(
+            `SELECT u.email FROM Team_Members tm
+             JOIN Teams t ON tm.team_id = t.team_id
+             JOIN Users u ON tm.user_id = u.user_id
+             WHERE t.hackathon_id = ? AND u.email IN (?)`,
+            [hackathon_id, emails]
+        );
+
+        if (existingAssignments.length > 0) {
+            await connection.rollback();
+            const badEmails = existingAssignments.map(a => a.email).join(', ');
+            return res.status(400).json({ 
+                success: false, 
+                message: `The following students are already registered in another team for this hackathon: ${badEmails}` 
+            });
+        }
+
+        // 6. Call stored procedure to create the team record with the leader
+        const defaultPasswordHash = await bcrypt.hash('password123', 10);
+
+        // First insert team record
+        const [teamResult] = await connection.query(
+            'INSERT INTO Teams (hackathon_id, leader_id, team_name, team_size, status) VALUES (?, ?, ?, ?, "Open")',
+            [hackathon_id, leader_id, team_name, totalMemberCount]
+        );
+        const team_id = teamResult.insertId;
+
+        // Insert leader into Team_Members
+        await connection.query(
+            `INSERT INTO Team_Members (team_id, user_id, enrollment_number, phone_number, branch, year, role, github_url) 
+             VALUES (?, ?, ?, ?, ?, ?, 'Leader', ?)`,
+            [
+                team_id, 
+                leader_id, 
+                leader_details.enrollment_number, 
+                leader_details.phone_number, 
+                leader_details.branch, 
+                leader_details.year, 
+                leader_details.github_url || null
+            ]
+        );
+
+        // 7. For each other member, retrieve user_id (or register them automatically if they don't exist)
+        for (let i = 1; i < allMembers.length; i++) {
+            const member = allMembers[i];
+            
+            // Check if user exists
+            const [users] = await connection.query('SELECT user_id FROM Users WHERE email = ?', [member.email]);
+            let memberUserId;
+
+            if (users.length > 0) {
+                memberUserId = users[0].user_id;
+            } else {
+                // Register the user automatically
+                const [newUser] = await connection.query(
+                    'INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, "Student")',
+                    [member.name, member.email, defaultPasswordHash]
+                );
+                memberUserId = newUser.insertId;
+            }
+
+            // Insert into Team_Members
+            await connection.query(
+                `INSERT INTO Team_Members (team_id, user_id, enrollment_number, phone_number, branch, year, role, github_url) 
+                 VALUES (?, ?, ?, ?, ?, ?, 'Developer', ?)`,
+                [
+                    team_id, 
+                    memberUserId, 
+                    member.enrollment_number, 
+                    member.phone_number, 
+                    member.branch, 
+                    member.year, 
+                    member.github_url
+                ]
+            );
+        }
+
+        await connection.commit();
 
         res.status(201).json({
             success: true,
-            message: 'Team created successfully and leader joined!',
+            message: 'Team and all members registered successfully!',
             team_id
         });
+
     } catch (err) {
+        await connection.rollback();
         console.error('Create Team Error:', err);
         res.status(500).json({ 
             success: false, 
             message: err.sqlMessage || 'Server error creating team', 
             error: err.message 
         });
+    } finally {
+        connection.release();
     }
 };
 
@@ -57,7 +198,6 @@ exports.getTeamDetails = async (req, res) => {
     const teamId = req.params.id;
 
     try {
-        // Query view for summary info
         const [teamSummary] = await db.query(
             'SELECT * FROM Team_Summary_View WHERE team_id = ?', 
             [teamId]
@@ -67,29 +207,17 @@ exports.getTeamDetails = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Team not found' });
         }
 
-        // Query team members joining Users and Student_Profiles
         const [members] = await db.query(
             `SELECT tm.member_id, tm.role as team_role, tm.joined_at, 
-                    u.user_id, u.name, u.email, u.college, u.branch, u.year,
-                    p.github_url, p.linkedin_url, p.bio
+                    tm.enrollment_number, tm.phone_number, tm.github_url, tm.branch, tm.year,
+                    u.user_id, u.name, u.email, u.college
              FROM Team_Members tm
              JOIN Users u ON tm.user_id = u.user_id
-             LEFT JOIN Student_Profiles p ON u.user_id = p.user_id
              WHERE tm.team_id = ?
              ORDER BY tm.joined_at ASC`,
             [teamId]
         );
 
-        // Fetch skills for each member
-        const membersWithSkills = await Promise.all(members.map(async (m) => {
-            const [skillRows] = await db.query('SELECT skill FROM Student_Skills WHERE user_id = ?', [m.user_id]);
-            return {
-                ...m,
-                skills: skillRows.map(s => s.skill)
-            };
-        }));
-
-        // Check if there is a pending registration
         const [regRows] = await db.query('SELECT registration_id, status, submitted_at FROM Registrations WHERE team_id = ?', [teamId]);
         const registration = regRows.length > 0 ? regRows[0] : null;
 
@@ -98,236 +226,151 @@ exports.getTeamDetails = async (req, res) => {
             data: {
                 ...teamSummary[0],
                 registration,
-                members: membersWithSkills
+                members
             }
         });
     } catch (err) {
-        console.error('Get Team Details Error:', err);
+        console.error(err);
         res.status(500).json({ success: false, message: 'Server error retrieving team details' });
     }
 };
 
-// @desc    Get current user's team for a hackathon
-// @route   GET /api/teams/user/active
+// @desc    Get all teams for matching search
+// @route   GET /api/teams
 // @access  Private
-exports.getMyTeams = async (req, res) => {
-    const userId = req.user.user_id;
-
+exports.getAllTeams = async (req, res) => {
     try {
-        const [teams] = await db.query(
-            `SELECT t.team_id, t.team_name, t.team_size, t.status AS team_status,
-                    tm.role AS user_role, h.hackathon_id, h.title AS hackathon_title,
-                    h.max_team_size, h.registration_deadline,
-                    (SELECT name FROM Users WHERE user_id = t.leader_id) AS leader_name
-             FROM Team_Members tm
-             JOIN Teams t ON tm.team_id = t.team_id
-             JOIN Hackathons h ON t.hackathon_id = h.hackathon_id
-             WHERE tm.user_id = ?`,
-            [userId]
-        );
-
-        res.status(200).json({ success: true, count: teams.length, data: teams });
+        const [teams] = await db.query('SELECT * FROM Team_Summary_View');
+        res.status(200).json({ success: true, data: teams });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: 'Server error retrieving your teams' });
+        res.status(500).json({ success: false, message: 'Server error retrieving teams' });
     }
 };
 
-// @desc    Leave a team (If leader leaves, team is dissolved)
+// @desc    Leave a team
 // @route   DELETE /api/teams/:id/leave
 // @access  Private
 exports.leaveTeam = async (req, res) => {
     const teamId = req.params.id;
     const userId = req.user.user_id;
 
-    const connection = await db.getConnection();
     try {
-        await connection.beginTransaction();
+        const [team] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [teamId]);
+        if (team.length === 0) return res.status(404).json({ success: false, message: 'Team not found' });
 
-        // Check if team exists
-        const [teams] = await connection.query('SELECT leader_id, status FROM Teams WHERE team_id = ? FOR UPDATE', [teamId]);
-        if (teams.length === 0) {
-            connection.release();
-            return res.status(404).json({ success: false, message: 'Team not found' });
+        if (team[0].leader_id === userId) {
+            return res.status(400).json({ success: false, message: 'Team leaders cannot leave the team. You must delete the team instead.' });
         }
 
-        const team = teams[0];
-        
-        // Cannot leave a team if the registration has already been submitted (team status is Closed/Submitted)
-        const [regRows] = await connection.query('SELECT registration_id FROM Registrations WHERE team_id = ?', [teamId]);
-        if (regRows.length > 0) {
-            connection.release();
-            return res.status(400).json({ success: false, message: 'Cannot leave the team after registration has been submitted.' });
-        }
+        const [result] = await db.query('DELETE FROM Team_Members WHERE team_id = ? AND user_id = ?', [teamId, userId]);
+        if (result.affectedRows === 0) return res.status(400).json({ success: false, message: 'You are not a member of this team' });
 
-        if (team.leader_id === userId) {
-            // Leader leaves: Dissolve the team entirely
-            await connection.query('DELETE FROM Teams WHERE team_id = ?', [teamId]);
-            await connection.commit();
-            res.status(200).json({ success: true, message: 'Team dissolved successfully as leader left.' });
-        } else {
-            // Normal member leaves
-            await connection.query('DELETE FROM Team_Members WHERE team_id = ? AND user_id = ?', [teamId, userId]);
-            await connection.commit();
-            res.status(200).json({ success: true, message: 'You have left the team successfully.' });
-        }
+        res.status(200).json({ success: true, message: 'Successfully left the team' });
     } catch (err) {
-        await connection.rollback();
-        console.error('Leave Team Error:', err);
-        res.status(500).json({ success: false, message: 'Server error leaving team', error: err.message });
-    } finally {
-        connection.release();
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error leaving team' });
     }
 };
 
-// @desc    Remove a member (Leader only)
+// @desc    Delete a team (Leader only)
+// @route   DELETE /api/teams/:id
+// @access  Private
+exports.deleteTeam = async (req, res) => {
+    const teamId = req.params.id;
+    const userId = req.user.user_id;
+
+    try {
+        const [team] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [teamId]);
+        if (team.length === 0) return res.status(404).json({ success: false, message: 'Team not found' });
+
+        if (team[0].leader_id !== userId) {
+            return res.status(403).json({ success: false, message: 'Unauthorized. Only team leaders can delete the team.' });
+        }
+
+        await db.query('DELETE FROM Teams WHERE team_id = ?', [teamId]);
+        res.status(200).json({ success: true, message: 'Team deleted successfully' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error deleting team' });
+    }
+};
+
+// @desc    Get user's active teams (includes details of teammate memberships)
+// @route   GET /api/teams/my-teams
+// @access  Private
+exports.getMyTeams = async (req, res) => {
+    const userId = req.user.user_id;
+
+    try {
+        const [teams] = await db.query(
+            `SELECT t.*, h.title AS hackathon_title, tm.role AS user_role, r.status AS registration_status
+             FROM Team_Members tm
+             JOIN Teams t ON tm.team_id = t.team_id
+             JOIN Hackathons h ON t.hackathon_id = h.hackathon_id
+             LEFT JOIN Registrations r ON t.team_id = r.team_id
+             WHERE tm.user_id = ?`,
+            [userId]
+        );
+        res.status(200).json({ success: true, data: teams });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error retrieving user teams' });
+    }
+};
+
+// @desc    Mock search matching teams to keep endpoint alive
+// @route   GET /api/teams/search/match
+// @access  Private
+exports.searchTeams = async (req, res) => {
+    try {
+        const [teams] = await db.query('SELECT * FROM Team_Summary_View');
+        res.status(200).json({ success: true, data: teams });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error searching teams' });
+    }
+};
+
+// @desc    Remove a member from a team (Leader only)
 // @route   DELETE /api/teams/:id/members/:userId
 // @access  Private
 exports.removeMember = async (req, res) => {
-    const teamId = req.params.id;
-    const removeUserId = req.params.userId;
-    const requesterId = req.user.user_id;
+    const { id, userId } = req.params;
+    const leaderId = req.user.user_id;
 
     try {
-        const [teams] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [teamId]);
-        if (teams.length === 0) {
-            return res.status(404).json({ success: false, message: 'Team not found' });
-        }
+        const [team] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [id]);
+        if (team.length === 0) return res.status(404).json({ success: false, message: 'Team not found' });
+        if (team[0].leader_id !== leaderId) return res.status(403).json({ success: false, message: 'Unauthorized. Only team leaders can remove members.' });
+        if (parseInt(userId) === leaderId) return res.status(400).json({ success: false, message: 'Leaders cannot remove themselves.' });
 
-        if (teams[0].leader_id !== requesterId) {
-            return res.status(403).json({ success: false, message: 'Only the team leader can remove members' });
-        }
-
-        if (parseInt(removeUserId) === requesterId) {
-            return res.status(400).json({ success: false, message: 'Leaders cannot remove themselves. Leave the team to dissolve it.' });
-        }
-
-        await db.query('DELETE FROM Team_Members WHERE team_id = ? AND user_id = ?', [teamId, removeUserId]);
-        
-        // Notify the removed member
-        await db.query(
-            'INSERT INTO Notifications (user_id, message) VALUES (?, ?)',
-            [removeUserId, `You have been removed from team ID ${teamId}.`]
-        );
-
-        res.status(200).json({ success: true, message: 'Member removed successfully' });
+        await db.query('DELETE FROM Team_Members WHERE team_id = ? AND user_id = ?', [id, userId]);
+        res.status(200).json({ success: true, message: 'Member removed successfully.' });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: 'Server error removing member' });
     }
 };
 
-// @desc    Assign role to a team member (Leader only)
+// @desc    Assign a role to a team member (Leader only)
 // @route   PUT /api/teams/:id/members/:userId/role
 // @access  Private
 exports.assignMemberRole = async (req, res) => {
-    const teamId = req.params.id;
-    const targetUserId = req.params.userId;
+    const { id, userId } = req.params;
     const { role } = req.body;
-    const requesterId = req.user.user_id;
-
-    if (!role) {
-        return res.status(400).json({ success: false, message: 'Please provide a role name' });
-    }
+    const leaderId = req.user.user_id;
 
     try {
-        const [teams] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [teamId]);
-        if (teams.length === 0) {
-            return res.status(404).json({ success: false, message: 'Team not found' });
-        }
+        const [team] = await db.query('SELECT leader_id FROM Teams WHERE team_id = ?', [id]);
+        if (team.length === 0) return res.status(404).json({ success: false, message: 'Team not found' });
+        if (team[0].leader_id !== leaderId) return res.status(403).json({ success: false, message: 'Unauthorized.' });
 
-        if (teams[0].leader_id !== requesterId) {
-            return res.status(403).json({ success: false, message: 'Only the team leader can assign roles' });
-        }
-
-        await db.query(
-            'UPDATE Team_Members SET role = ? WHERE team_id = ? AND user_id = ?',
-            [role, teamId, targetUserId]
-        );
-
-        res.status(200).json({ success: true, message: 'Member role updated successfully' });
+        await db.query('UPDATE Team_Members SET role = ? WHERE team_id = ? AND user_id = ?', [role, id, userId]);
+        res.status(200).json({ success: true, message: 'Member role updated successfully.' });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: 'Server error assigning role' });
+        res.status(500).json({ success: false, message: 'Server error assigning member role' });
     }
 };
 
-// @desc    Search and match teams (Complex SQL: JOINs, GROUP BY, HAVING)
-// @route   GET /api/teams/search/match
-// @access  Private
-exports.searchTeams = async (req, res) => {
-    const { hackathon_id, skill, interest } = req.query;
-
-    if (!hackathon_id) {
-        return res.status(400).json({ success: false, message: 'hackathon_id is required' });
-    }
-
-    try {
-        // Core query to fetch Open teams with their current size and max allowed size.
-        // We will construct matching filters.
-        // Complex SQL joining Teams, Hackathons, Team_Members, Users, Student_Skills, Student_Interests
-        let queryParams = [hackathon_id];
-        let filterJoin = '';
-        let filterWhere = '';
-
-        if (skill) {
-            filterJoin += ` JOIN Team_Members tm2 ON t.team_id = tm2.team_id 
-                            JOIN Student_Skills ss ON tm2.user_id = ss.user_id`;
-            filterWhere += ` AND ss.skill = ?`;
-            queryParams.push(skill);
-        }
-
-        if (interest) {
-            filterJoin += ` JOIN Team_Members tm3 ON t.team_id = tm3.team_id 
-                            JOIN Student_Interests si ON tm3.user_id = si.user_id`;
-            filterWhere += ` AND si.interest = ?`;
-            queryParams.push(interest);
-        }
-
-        // SQL using: JOINS, GROUP BY, and HAVING to select teams that are open,
-        // match search criteria, and have NOT exceeded their hackathon team limit.
-        const sql = `
-            SELECT 
-                t.team_id, 
-                t.team_name, 
-                t.team_size,
-                t.status AS team_status, 
-                h.title AS hackathon_title, 
-                h.max_team_size,
-                u.name AS leader_name,
-                u.email AS leader_email
-            FROM Teams t
-            JOIN Hackathons h ON t.hackathon_id = h.hackathon_id
-            LEFT JOIN Users u ON t.leader_id = u.user_id
-            ${filterJoin}
-            WHERE t.hackathon_id = ? 
-              AND t.status = 'Open'
-              ${filterWhere}
-            GROUP BY t.team_id, h.max_team_size, u.name, u.email
-            HAVING t.team_size < h.max_team_size
-            ORDER BY t.team_size DESC
-        `;
-
-        const [teams] = await db.query(sql, queryParams);
-
-        // Fetch members for each matched team
-        const teamsWithMembers = await Promise.all(teams.map(async (team) => {
-            const [mRows] = await db.query(
-                `SELECT u.name, u.email, tm.role 
-                 FROM Team_Members tm 
-                 JOIN Users u ON tm.user_id = u.user_id 
-                 WHERE tm.team_id = ?`,
-                [team.team_id]
-            );
-            return {
-                ...team,
-                members: mRows
-            };
-        }));
-
-        res.status(200).json({ success: true, count: teamsWithMembers.length, data: teamsWithMembers });
-    } catch (err) {
-        console.error('Team Matching Search Error:', err);
-        res.status(500).json({ success: false, message: 'Server error searching for teams', error: err.message });
-    }
-};

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../context/AuthContext';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
-import { Check, X, ShieldAlert, FileText, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { Check, X, ShieldAlert, FileText, CheckCircle2, XCircle, Clock, Download } from 'lucide-react';
 
 const AdminApprovals = () => {
   const [registrations, setRegistrations] = useState([]);
@@ -35,6 +35,21 @@ const AdminApprovals = () => {
     }
   };
 
+  const handleExportCSV = async () => {
+    try {
+      const res = await api.get('/admin/export/csv', { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'registrations.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      alert('Failed to export CSV');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-slate-100">
       <Navbar title="Review Registrations" />
@@ -42,9 +57,22 @@ const AdminApprovals = () => {
 
       <main className="pl-64 pt-16 min-h-screen">
         <div className="p-8 max-w-7xl mx-auto space-y-8">
-          <div>
-            <h2 className="text-3xl font-extrabold text-white">Review Team Registrations</h2>
-            <p className="text-slate-400 text-sm mt-1">Review, approve, or reject student team registrations submitted for published hackathons.</p>
+          
+          {/* Header */}
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="text-left">
+              <h2 className="text-3xl font-extrabold text-white">Review Team Registrations</h2>
+              <p className="text-slate-400 text-sm mt-1">Review, approve, or reject student team registrations submitted for published hackathons.</p>
+            </div>
+            {registrations.length > 0 && (
+              <button
+                onClick={handleExportCSV}
+                className="bg-accent hover:bg-accent/80 text-white font-bold px-5 py-3 rounded-xl text-xs transition shadow-[0_0_20px_rgba(59,130,246,0.25)] flex items-center gap-2"
+              >
+                <Download size={14} />
+                <span>Export to CSV</span>
+              </button>
+            )}
           </div>
 
           {loading ? (
@@ -76,19 +104,19 @@ const AdminApprovals = () => {
                     ) : (
                       registrations.map((reg) => (
                         <tr key={reg.registration_id} className="hover:bg-slate-800/20 transition duration-150">
-                          <td className="p-5 font-bold text-white">{reg.team_name}</td>
-                          <td className="p-5 text-slate-300">{reg.hackathon_title}</td>
-                          <td className="p-5 text-slate-400">{reg.team_size} members</td>
-                          <td className="p-5">
+                          <td className="p-5 font-bold text-white text-left">{reg.team_name}</td>
+                          <td className="p-5 text-slate-300 text-left">{reg.hackathon_title}</td>
+                          <td className="p-5 text-slate-400 text-left">{reg.team_size} members</td>
+                          <td className="p-5 text-left">
                             <div>
                               <p className="text-slate-300 font-medium">{reg.leader_name}</p>
                               <p className="text-[10px] text-slate-500">{reg.leader_email}</p>
                             </div>
                           </td>
-                          <td className="p-5 text-slate-400 text-xs">
+                          <td className="p-5 text-slate-400 text-xs text-left">
                             {new Date(reg.submitted_at).toLocaleString()}
                           </td>
-                          <td className="p-5">
+                          <td className="p-5 text-left">
                             <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
                               reg.registration_status === 'Approved' ? 'bg-green-500/10 text-green-400' :
                               reg.registration_status === 'Rejected' ? 'bg-red-500/10 text-red-400' :
@@ -101,7 +129,7 @@ const AdminApprovals = () => {
                             </span>
                           </td>
                           <td className="p-5 text-right">
-                            {reg.registration_status === 'Pending' ? (
+                            {reg.registration_status === 'Pending' && (
                               <div className="flex gap-2 justify-end">
                                 <button
                                   onClick={() => handleUpdateStatus(reg.registration_id, 'Approved')}
@@ -118,8 +146,6 @@ const AdminApprovals = () => {
                                   <X size={14} />
                                 </button>
                               </div>
-                            ) : (
-                              <span className="text-xs text-slate-500 italic">No actions pending</span>
                             )}
                           </td>
                         </tr>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth, api } from '../context/AuthContext';
-import { Bell, User, LogOut, MessageSquare } from 'lucide-react';
+import { Bell, User, LogOut, MessageSquare, Sun, Moon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const Navbar = ({ title }) => {
@@ -8,6 +8,20 @@ const Navbar = ({ title }) => {
   const [notifications, setNotifications] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
+
+  useEffect(() => {
+    if (theme === 'light') {
+      document.documentElement.classList.add('light');
+    } else {
+      document.documentElement.classList.remove('light');
+    }
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'light' ? 'dark' : 'light');
+  };
 
   const fetchNotifications = async () => {
     try {
@@ -62,6 +76,15 @@ const Navbar = ({ title }) => {
       </div>
 
       <div className="flex items-center gap-4">
+        {/* Theme Toggle Button */}
+        <button
+          onClick={toggleTheme}
+          className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+          title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+        >
+          {theme === 'light' ? <Moon size={20} className="text-slate-400" /> : <Sun size={20} className="text-amber-400" />}
+        </button>
+
         {/* Notifications Dropdown (Students only) */}
         {user && user.role === 'Student' && (
           <div className="relative">

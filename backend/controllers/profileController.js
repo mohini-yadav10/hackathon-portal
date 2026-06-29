@@ -21,11 +21,11 @@ exports.getProfile = async (req, res) => {
 
         // Fetch profile details
         const [profiles] = await db.query(
-            'SELECT github_url, linkedin_url, resume_path, bio FROM Student_Profiles WHERE user_id = ?',
+            'SELECT github_url, linkedin_url, resume_path, bio, profile_pic_path FROM Student_Profiles WHERE user_id = ?',
             [userId]
         );
 
-        const profile = profiles[0] || { github_url: '', linkedin_url: '', resume_path: '', bio: '' };
+        const profile = profiles[0] || { github_url: '', linkedin_url: '', resume_path: '', bio: '', profile_pic_path: null };
 
         // Fetch skills
         const [skillsRows] = await db.query(
@@ -48,6 +48,7 @@ exports.getProfile = async (req, res) => {
                 github_url: profile.github_url,
                 linkedin_url: profile.linkedin_url,
                 resume_path: profile.resume_path,
+                profile_pic_path: profile.profile_pic_path,
                 bio: profile.bio,
                 skills,
                 interests
@@ -122,3 +123,76 @@ exports.updateProfile = async (req, res) => {
         connection.release();
     }
 };
+
+// @desc    Upload Profile Picture (Avatar)
+// @route   POST /api/profiles/upload-avatar
+// @access  Private
+exports.uploadAvatar = async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'Please upload an image file' });
+    }
+
+    const userId = req.user.user_id;
+    const profilePicPath = `/uploads/avatars/${req.file.filename}`;
+
+    try {
+        const [profiles] = await db.query('SELECT profile_id FROM Student_Profiles WHERE user_id = ?', [userId]);
+        if (profiles.length === 0) {
+            await db.query(
+                'INSERT INTO Student_Profiles (user_id, profile_pic_path) VALUES (?, ?)',
+                [userId, profilePicPath]
+            );
+        } else {
+            await db.query(
+                'UPDATE Student_Profiles SET profile_pic_path = ? WHERE user_id = ?',
+                [profilePicPath, userId]
+            );
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Profile picture uploaded successfully',
+            profile_pic_path: profilePicPath
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error uploading profile picture' });
+    }
+};
+
+// @desc    Upload Resume
+// @route   POST /api/profiles/upload-resume
+// @access  Private
+exports.uploadResume = async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'Please upload a PDF/Word document' });
+    }
+
+    const userId = req.user.user_id;
+    const resumePath = `/uploads/resumes/${req.file.filename}`;
+
+    try {
+        const [profiles] = await db.query('SELECT profile_id FROM Student_Profiles WHERE user_id = ?', [userId]);
+        if (profiles.length === 0) {
+            await db.query(
+                'INSERT INTO Student_Profiles (user_id, resume_path) VALUES (?, ?)',
+                [userId, resumePath]
+            );
+        } else {
+            await db.query(
+                'UPDATE Student_Profiles SET resume_path = ? WHERE user_id = ?',
+                [resumePath, userId]
+            );
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Resume uploaded successfully',
+            resume_path: resumePath
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error uploading resume' });
+    }
+};
+

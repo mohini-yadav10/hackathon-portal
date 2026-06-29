@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth, api } from '../context/AuthContext';
 import Navbar from '../components/Navbar';
 import Sidebar from '../components/Sidebar';
-import { Users, UserMinus, ShieldAlert, Award, Send, CheckCircle, AlertTriangle, Play } from 'lucide-react';
+import { Users, UserMinus, ShieldAlert, Award, Send, CheckCircle2, AlertTriangle, Play, X, Loader2, Edit3, Trash2, Globe, Phone } from 'lucide-react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const MyTeam = () => {
   const { user } = useAuth();
@@ -12,13 +13,17 @@ const MyTeam = () => {
   const targetTeamId = searchParams.get('id');
 
   const [teamDetails, setTeamDetails] = useState(null);
-  const [inviteEmail, setInviteEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  // Role Custom Modal State
+  const [showRoleModal, setShowRoleModal] = useState(false);
+  const [roleModalUserId, setRoleModalUserId] = useState(null);
+  const [roleModalValue, setRoleModalValue] = useState('');
+  const [roleSaving, setRoleSaving] = useState(false);
+
   const fetchTeamDetails = async () => {
-    // If no specific team ID is passed, retrieve the user's active teams and take the first one, or prompt select.
     let teamId = targetTeamId;
 
     try {
@@ -32,6 +37,7 @@ const MyTeam = () => {
         }
       }
 
+      // Fetch team details
       const res = await api.get(`/teams/${teamId}`);
       setTeamDetails(res.data.data);
     } catch (err) {
@@ -46,41 +52,23 @@ const MyTeam = () => {
     fetchTeamDetails();
   }, [targetTeamId]);
 
-  const handleInviteSubmit = async (e) => {
-    e.preventDefault();
-    if (!inviteEmail.trim() || !teamDetails) return;
-
-    setErrorMsg('');
-    setSuccessMsg('');
-    try {
-      await api.post('/invitations', {
-        receiver_email: inviteEmail.trim(),
-        team_id: teamDetails.team_id
-      });
-      setSuccessMsg(`Invitation successfully sent to ${inviteEmail.trim()}!`);
-      setInviteEmail('');
-      fetchTeamDetails();
-      setTimeout(() => setSuccessMsg(''), 5000);
-    } catch (err) {
-      setErrorMsg(err.response?.data?.message || 'Failed to send invitation');
-    }
-  };
-
   const handleRemoveMember = async (memberUserId, memberName) => {
     if (window.confirm(`Are you sure you want to remove ${memberName} from the team?`)) {
       try {
         await api.delete(`/teams/${teamDetails.team_id}/members/${memberUserId}`);
-        alert('Member removed successfully');
+        setSuccessMsg('Member removed successfully');
         fetchTeamDetails();
+        setTimeout(() => setSuccessMsg(''), 4000);
       } catch (err) {
-        alert(err.response?.data?.message || 'Failed to remove member');
+        setErrorMsg(err.response?.data?.message || 'Failed to remove member');
+        setTimeout(() => setErrorMsg(''), 4000);
       }
     }
   };
 
   const handleLeaveTeam = async () => {
     const msg = teamDetails.leader_id === user.user_id 
-      ? 'WARNING: You are the team leader. Leaving the team will DISSOLVE it entirely. Do you want to continue?'
+      ? 'WARNING: You are the team leader. Dissolving the team will delete the team registration. Do you want to continue?'
       : 'Are you sure you want to leave the team?';
       
     if (window.confirm(msg)) {
@@ -94,32 +82,47 @@ const MyTeam = () => {
     }
   };
 
-  const handleAssignRole = async (memberUserId, currentRole) => {
-    const newRole = prompt('Enter team role for this member (e.g. Frontend, Backend, ML Engineer, UI Designer):', currentRole);
-    if (newRole === null) return; // cancelled
+  const openRoleModal = (userId, currentRole) => {
+    setRoleModalUserId(userId);
+    setRoleModalValue(currentRole || 'Developer');
+    setShowRoleModal(true);
+  };
 
+  const handleSaveRole = async (e) => {
+    e.preventDefault();
+    if (!roleModalValue.trim()) return;
+
+    setRoleSaving(true);
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
-      await api.put(`/teams/${teamDetails.team_id}/members/${memberUserId}/role`, {
-        role: newRole || 'Developer'
+      await api.put(`/teams/${teamDetails.team_id}/members/${roleModalUserId}/role`, {
+        role: roleModalValue.trim()
       });
-      alert('Role updated successfully!');
+      setShowRoleModal(false);
+      setSuccessMsg('Member role updated successfully!');
       fetchTeamDetails();
+      setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to assign role');
+      setErrorMsg(err.response?.data?.message || 'Failed to assign role');
+      setTimeout(() => setErrorMsg(''), 4000);
+    } finally {
+      setRoleSaving(false);
     }
   };
 
   const handleSubmitRegistration = async () => {
-    if (window.confirm('Do you want to submit the final registration? Once submitted, the team will be locked and cannot be edited.')) {
+    if (window.confirm('Ready to submit registration for this hackathon? Team membership will be locked.')) {
       try {
         await api.post('/registrations', {
           team_id: teamDetails.team_id,
           hackathon_id: teamDetails.hackathon_id
         });
-        alert('Registration submitted successfully!');
+        setSuccessMsg('Registration submitted successfully! It is now pending approval.');
         fetchTeamDetails();
+        setTimeout(() => setSuccessMsg(''), 6000);
       } catch (err) {
-        alert(err.response?.data?.message || 'Failed to submit registration');
+        setErrorMsg(err.response?.data?.message || 'Could not submit registration');
       }
     }
   };
@@ -129,8 +132,8 @@ const MyTeam = () => {
       <div className="min-h-screen bg-background text-slate-100">
         <Navbar title="My Team" />
         <Sidebar />
-        <main className="pl-64 pt-16 min-h-screen flex justify-center items-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-accent"></div>
+        <main className="pl-64 pt-16 min-h-screen flex items-center justify-center">
+          <Loader2 size={32} className="text-accent animate-spin" />
         </main>
       </div>
     );
@@ -141,16 +144,16 @@ const MyTeam = () => {
       <div className="min-h-screen bg-background text-slate-100">
         <Navbar title="My Team" />
         <Sidebar />
-        <main className="pl-64 pt-16 min-h-screen">
-          <div className="p-8 max-w-4xl mx-auto space-y-6 text-center py-24">
+        <main className="pl-64 pt-16 min-h-screen flex flex-col items-center justify-center p-8">
+          <div className="glass-panel p-12 rounded-3xl border-slate-800 text-center max-w-md">
             <Users size={48} className="text-slate-600 mx-auto mb-4" />
-            <h3 className="text-xl font-bold text-white">No active teams found</h3>
-            <p className="text-slate-400 text-sm max-w-sm mx-auto mt-2">
-              You are currently not associated with any team. Browse hackathons to form or join a team.
+            <h3 className="text-lg font-bold text-white mb-2">No Team Found</h3>
+            <p className="text-xs text-slate-400 leading-relaxed mb-6">
+              You are not currently part of any team. Browse hackathons to register a team directly.
             </p>
             <button
               onClick={() => navigate('/hackathons')}
-              className="mt-6 bg-accent hover:bg-accent/80 text-white font-semibold px-6 py-2.5 rounded-xl text-xs transition"
+              className="bg-accent hover:bg-accent/80 text-white font-bold px-6 py-2.5 rounded-xl text-xs transition"
             >
               Browse Hackathons
             </button>
@@ -161,8 +164,8 @@ const MyTeam = () => {
   }
 
   const isLeader = teamDetails.leader_id === user.user_id;
-  const isRegistered = teamDetails.registration !== null;
-  const registrationStatus = teamDetails.registration?.status || 'Not Submitted';
+  const registrationStatus = teamDetails.registration?.status;
+  const isRegistered = !!teamDetails.registration;
 
   return (
     <div className="min-h-screen bg-background text-slate-100">
@@ -170,36 +173,32 @@ const MyTeam = () => {
       <Sidebar />
 
       <main className="pl-64 pt-16 min-h-screen">
-        <div className="p-8 max-w-6xl mx-auto space-y-8">
+        <div className="p-8 max-w-7xl mx-auto space-y-8">
           
           {/* Header */}
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div className="text-left">
-              <span className="text-xs text-accent font-bold uppercase tracking-widest bg-accent/10 px-3 py-1 rounded-full border border-accent/25">
-                {teamDetails.hackathon_title}
-              </span>
-              <h2 className="text-3xl font-extrabold text-white mt-3">{teamDetails.team_name}</h2>
-              <p className="text-slate-400 text-sm mt-1">
-                Leader: <span className="text-slate-200 font-semibold">{teamDetails.leader_name}</span> | Team Size: {teamDetails.team_size}/{teamDetails.hackathon_max_size}
-              </p>
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-800/60 pb-6 text-left">
+            <div>
+              <h2 className="text-3xl font-extrabold text-white flex items-center gap-2">
+                {teamDetails.team_name}
+              </h2>
+              <p className="text-slate-400 text-sm mt-1">Hackathon: {teamDetails.hackathon_title}</p>
             </div>
-            
-            <div className="flex gap-2">
+            <div className="flex gap-3">
               <button
                 onClick={handleLeaveTeam}
-                className="bg-red-500/10 hover:bg-red-500 hover:text-white border border-red-500/20 text-red-400 font-bold px-4 py-2.5 rounded-xl text-xs transition"
+                className="bg-red-500/10 hover:bg-red-500/25 border border-red-500/30 text-red-400 px-5 py-3 rounded-xl text-sm font-semibold transition"
               >
                 {isLeader ? 'Dissolve Team' : 'Leave Team'}
               </button>
             </div>
           </div>
 
-          {/* Registration Status Alert Banner */}
-          <div className="glass-panel p-5 rounded-2xl border-slate-800 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3 text-left">
+          {/* Registration Lock Banner */}
+          <div className="bg-slate-800/30 border border-slate-800 rounded-3xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 text-left">
+            <div className="flex items-start gap-4">
               {registrationStatus === 'Approved' ? (
                 <div className="p-2.5 bg-green-500/10 text-green-500 rounded-xl border border-green-500/20">
-                  <CheckCircle size={22} />
+                  <CheckCircle2 size={22} />
                 </div>
               ) : registrationStatus === 'Pending' ? (
                 <div className="p-2.5 bg-amber-500/10 text-amber-500 rounded-xl border border-amber-500/20">
@@ -214,7 +213,7 @@ const MyTeam = () => {
                 <h4 className="font-bold text-white text-sm">Registration Status</h4>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {registrationStatus === 'Approved' ? 'Your team has been officially registered and approved for the event.' :
-                   registrationStatus === 'Pending' ? 'Your registration is submitted and pending admin approval.' :
+                   registrationStatus === 'Pending' ? 'Your registration is submitted and pending review.' :
                    'Your team is currently open and has not submitted the final registration.'}
                 </p>
               </div>
@@ -253,132 +252,161 @@ const MyTeam = () => {
             </div>
           )}
 
-          {/* Members list & Invite Controls */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            {/* Members Panel */}
-            <div className="lg:col-span-2 space-y-4">
-              <div className="glass-panel p-6 rounded-3xl border-slate-800">
-                <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2 border-b border-slate-800 pb-3 text-left">
-                  <Users size={20} className="text-accent" />
-                  <span>Team Members ({teamDetails.members.length})</span>
-                </h3>
+          {/* Members Panel */}
+          <div className="space-y-4">
+            <div className="glass-panel p-6 rounded-3xl border-slate-800">
+              <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2 border-b border-slate-800 pb-3 text-left">
+                <Users size={20} className="text-accent" />
+                <span>Team Members ({teamDetails.members.length} / {teamDetails.max_team_size || 'N/A'})</span>
+              </h3>
 
-                <div className="space-y-4">
-                  {teamDetails.members.map((member) => {
-                    const isMemberLeader = member.user_id === teamDetails.leader_id;
-                    return (
-                      <div
-                        key={member.user_id}
-                        className="bg-slate-800/40 border border-slate-800 p-5 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 text-left"
-                      >
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <h4 className="font-bold text-white text-sm">{member.name}</h4>
-                            {isMemberLeader && (
-                              <span className="bg-accent/15 text-accent text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase">
-                                Leader
-                              </span>
-                            )}
-                            <span className="bg-slate-700/50 text-slate-300 text-[10px] px-2 py-0.5 rounded font-semibold">
-                              {member.team_role}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-400 font-medium">
-                            {member.email} | {member.college} | {member.branch} | Year {member.year}
-                          </p>
-                          {member.bio && <p className="text-xs text-slate-500 leading-relaxed italic">"{member.bio}"</p>}
-                          {member.skills && member.skills.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {member.skills.map(s => (
-                                <span key={s} className="bg-accent/5 text-[9px] text-accent/80 border border-accent/15 px-1.5 py-0.5 rounded-md">
-                                  {s}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {teamDetails.members.map((member) => {
+                  const isMemberLeader = member.user_id === teamDetails.leader_id;
+                  return (
+                    <div
+                      key={member.user_id}
+                      className="bg-slate-800/40 border border-slate-800/80 p-6 rounded-3xl flex flex-col justify-between text-left animate-fade-in relative overflow-hidden"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h4 className="font-extrabold text-white text-base flex items-center gap-2">
+                              <span>{member.name}</span>
+                              {isMemberLeader && (
+                                <span className="bg-accent/15 text-accent text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase">
+                                  Leader
                                 </span>
-                              ))}
-                            </div>
-                          )}
+                              )}
+                            </h4>
+                            <p className="text-xs text-slate-400 mt-0.5">{member.email}</p>
+                          </div>
+                          <span className="bg-slate-700/50 text-slate-300 text-[10px] px-2 py-0.5 rounded-md font-semibold">
+                            {member.team_role}
+                          </span>
                         </div>
 
-                        {/* Leader Actions */}
-                        {isLeader && !isRegistered && !isMemberLeader && (
-                          <div className="flex items-center gap-2 w-full md:w-auto mt-2 md:mt-0 justify-end">
-                            <button
-                              onClick={() => handleAssignRole(member.user_id, member.team_role)}
-                              className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-xl text-xs transition"
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-300 border-t border-slate-800/60 pt-3">
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-500 block">Enrollment ID</span>
+                            <span className="font-semibold">{member.enrollment_number}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-500 block">Branch</span>
+                            <span className="font-semibold">{member.branch} (Yr {member.year})</span>
+                          </div>
+                          <div className="flex items-center gap-1 mt-1 col-span-2">
+                            <Phone size={12} className="text-slate-400" />
+                            <span>{member.phone_number}</span>
+                          </div>
+                        </div>
+
+                        {member.github_url && (
+                          <div className="pt-2">
+                            <a
+                              href={member.github_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-accent transition"
                             >
-                              Assign Role
-                            </button>
-                            <button
-                              onClick={() => handleRemoveMember(member.user_id, member.name)}
-                              className="p-1.5 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white rounded-xl border border-red-500/20 transition"
-                              title="Kick member"
-                            >
-                              <UserMinus size={16} />
-                            </button>
+                              <Globe size={13} />
+                              <span>{member.github_url}</span>
+                            </a>
                           </div>
                         )}
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
 
-            {/* Invite Form Panel */}
-            <div className="space-y-6">
-              {isLeader && !isRegistered && (
-                <div className="glass-panel p-6 rounded-3xl border-slate-800 space-y-4">
-                  <h3 className="text-base font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-3 text-left">
-                    <Send size={16} className="text-accent" />
-                    <span>Invite Teammate</span>
-                  </h3>
-                  
-                  <p className="text-xs text-slate-400 leading-relaxed text-left">
-                    Enter the email address of a registered student to send them an invitation to join this team.
-                  </p>
-
-                  <form onSubmit={handleInviteSubmit} className="space-y-4 pt-2">
-                    <div className="space-y-2 text-left">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase pl-1">Student Email</label>
-                      <input
-                        type="email"
-                        value={inviteEmail}
-                        onChange={(e) => setInviteEmail(e.target.value)}
-                        className="w-full glass-input px-3.5 py-2.5 rounded-xl text-xs"
-                        placeholder="teammate@college.edu"
-                        required
-                      />
+                      {/* Leader Actions */}
+                      {isLeader && !isRegistered && !isMemberLeader && (
+                        <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-800/60 justify-end">
+                          <button
+                            onClick={() => openRoleModal(member.user_id, member.team_role)}
+                            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-xl text-[10px] uppercase transition flex items-center gap-1"
+                          >
+                            <Edit3 size={11} />
+                            <span>Edit Role</span>
+                          </button>
+                          <button
+                            onClick={() => handleRemoveMember(member.user_id, member.name)}
+                            className="bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/20 px-3 py-1.5 rounded-xl text-[10px] uppercase transition flex items-center gap-1"
+                          >
+                            <UserMinus size={11} />
+                            <span>Remove</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
-
-                    <button
-                      type="submit"
-                      className="w-full bg-accent hover:bg-accent/80 text-white font-bold py-2.5 rounded-xl text-xs transition shadow-[0_0_15px_rgba(59,130,246,0.2)]"
-                    >
-                      Send Invitation
-                    </button>
-                  </form>
-                </div>
-              )}
-
-              {/* Event Guidelines Card */}
-              <div className="glass-panel p-6 rounded-3xl border-slate-800 space-y-4 text-left">
-                <h3 className="text-base font-bold text-white flex items-center gap-2 border-b border-slate-800 pb-3">
-                  <Award size={16} className="text-accent" />
-                  <span>Guidelines</span>
-                </h3>
-                <ul className="space-y-2.5 text-xs text-slate-400 list-disc pl-4 leading-relaxed">
-                  <li>A user can only belong to one active team per hackathon.</li>
-                  <li>Final registration must be submitted by the Team Leader.</li>
-                  <li>Once final registration is submitted, team membership is locked.</li>
-                  <li>If the team leader leaves, the team dissolves.</li>
-                </ul>
+                  );
+                })}
               </div>
             </div>
-
           </div>
 
         </div>
       </main>
+
+      {/* Edit Role Modal */}
+      <AnimatePresence>
+        {showRoleModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-sm glass-panel p-6 rounded-3xl space-y-6 shadow-2xl relative text-left"
+            >
+              <button
+                onClick={() => setShowRoleModal(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-white text-lg">Update Member Role</h3>
+                <p className="text-xs text-slate-400">Specify the role/designation of this member in your team.</p>
+              </div>
+
+              <form onSubmit={handleSaveRole} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Role / Designation</label>
+                  <input
+                    type="text"
+                    value={roleModalValue}
+                    onChange={(e) => setRoleModalValue(e.target.value)}
+                    className="w-full glass-input px-3.5 py-2.5 rounded-xl text-xs"
+                    placeholder="e.g. Frontend Developer, ML Researcher"
+                    required
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRoleModal(false)}
+                    className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 font-bold py-2.5 rounded-xl text-xs transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={roleSaving}
+                    className="flex-1 bg-accent hover:bg-accent/80 text-white font-bold py-2.5 rounded-xl text-xs transition shadow-[0_0_15px_rgba(59,130,246,0.3)] flex items-center justify-center"
+                  >
+                    {roleSaving ? <Loader2 className="animate-spin" size={14} /> : 'Save Role'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div>
   );
 };

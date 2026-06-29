@@ -24,9 +24,9 @@ BEGIN
     -- Start Transaction
     START TRANSACTION;
     
-    -- Insert new team record (Trigger after_team_member_insert will adjust team_size later, initially set size to 0 and let members insert trigger update it)
+    -- Insert new team record (Trigger after_team_member_insert will adjust team_size later, initially set size to 1 to satisfy CHECK constraint, and let members insert trigger update it)
     INSERT INTO Teams (hackathon_id, leader_id, team_name, team_size, status)
-    VALUES (p_hackathon_id, p_leader_id, p_team_name, 0, 'Open');
+    VALUES (p_hackathon_id, p_leader_id, p_team_name, 1, 'Open');
     
     -- Fetch the generated team_id
     SET p_team_id = LAST_INSERT_ID();

@@ -66,15 +66,10 @@ const TeamSearch = () => {
   const handleJoinRequest = async (teamId) => {
     if (window.confirm('Do you want to send a request to join this team? (Note: A notification will be sent to the team leader)')) {
       try {
-        // Send a custom request notifications
-        // In the database model, we invite members to teams.
-        // We can add a message to the leader's notification panel alerting them that a user wants to join.
-        // Let's call a notification alert.
-        await api.post(`/invitations`, {
-          receiver_email: 'will_alert_leader', // The endpoint can be modified or we can alert
+        await api.post('/invitations/request', {
           team_id: teamId
         });
-        alert('Join request sent successfully!');
+        alert('Join request sent successfully to the team leader!');
       } catch (err) {
         alert(err.response?.data?.message || 'Failed to send request');
       }

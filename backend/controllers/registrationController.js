@@ -27,7 +27,7 @@ exports.submitRegistration = async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: 'Registration submitted successfully! It is now pending admin approval.'
+            message: 'Registration submitted successfully! It is now pending approval.'
         });
     } catch (err) {
         console.error('Submit Registration Error:', err);
@@ -39,12 +39,13 @@ exports.submitRegistration = async (req, res) => {
     }
 };
 
-// @desc    Approve or Reject registration (Admin Only)
+// @desc    Approve or Reject registration (Admin/Manager)
 // @route   PUT /api/registrations/:id/status
-// @access  Private/Admin
+// @access  Private/Admin/Manager
 exports.updateRegistrationStatus = async (req, res) => {
     const registrationId = req.params.id;
     const { status } = req.body; // 'Approved' or 'Rejected'
+    const { user_id, role } = req.user;
 
     if (!status || !['Approved', 'Rejected'].includes(status)) {
         return res.status(400).json({ success: false, message: 'Please provide status as Approved or Rejected' });
@@ -55,6 +56,19 @@ exports.updateRegistrationStatus = async (req, res) => {
         const [registrations] = await db.query('SELECT * FROM Registrations WHERE registration_id = ?', [registrationId]);
         if (registrations.length === 0) {
             return res.status(404).json({ success: false, message: 'Registration not found' });
+        }
+
+        // Manager assignment verification
+        if (role === 'Manager') {
+            const [mgrAssigned] = await db.query(
+                `SELECT 1 FROM Registrations r 
+                 JOIN Hackathon_Managers hm ON r.hackathon_id = hm.hackathon_id 
+                 WHERE r.registration_id = ? AND hm.user_id = ? AND hm.status = 'Active'`,
+                [registrationId, user_id]
+            );
+            if (mgrAssigned.length === 0) {
+                return res.status(403).json({ success: false, message: 'Unauthorized. You do not manage the hackathon for this registration.' });
+            }
         }
 
         // Update status. Trigger after_registration_status_update will fire automatically,
@@ -74,12 +88,58 @@ exports.updateRegistrationStatus = async (req, res) => {
     }
 };
 
-// @desc    Get all registrations (Admin only, uses Registration_Summary_View)
+// @desc    Get all registrations (Admin / Assigned Manager)
 // @route   GET /api/registrations
-// @access  Private/Admin
+// @access  Private/Admin/Manager
 exports.getAllRegistrations = async (req, res) => {
+    const { user_id, role } = req.user;
+
     try {
-        const [registrations] = await db.query('SELECT * FROM Registration_Summary_View ORDER BY submitted_at DESC');
+        let registrations;
+        
+        // Define base query to aggregate all teammate properties
+        const queryStr = `
+            SELECT 
+                tr.*,
+                COALESCE(
+                    (
+                        SELECT JSON_ARRAYAGG(
+                            JSON_OBJECT(
+                                'name', u.name,
+                                'email', u.email,
+                                'enrollment_number', tm.enrollment_number,
+                                'phone_number', tm.phone_number,
+                                'branch', tm.branch,
+                                'year', tm.year,
+                                'role', tm.role,
+                                'github_url', tm.github_url
+                            )
+                        )
+                        FROM Team_Members tm
+                        JOIN Users u ON tm.user_id = u.user_id
+                        WHERE tm.team_id = tr.team_id
+                    ),
+                    '[]'
+                ) AS members
+            FROM Team_Registration_View tr
+        `;
+
+        if (role === 'Admin') {
+            const [rows] = await db.query(`${queryStr} ORDER BY tr.registration_date DESC`);
+            registrations = rows;
+        } else if (role === 'Manager') {
+            const [rows] = await db.query(
+                `${queryStr} 
+                 JOIN Hackathon_Managers hm ON tr.hackathon_id = hm.hackathon_id 
+                 WHERE hm.user_id = ? AND hm.status = 'Active'
+                 ORDER BY tr.registration_date DESC`,
+                [user_id]
+            );
+            registrations = rows;
+        } else {
+            return res.status(403).json({ success: false, message: 'Unauthorized.' });
+        }
+
         res.status(200).json({ success: true, count: registrations.length, data: registrations });
     } catch (err) {
         console.error(err);

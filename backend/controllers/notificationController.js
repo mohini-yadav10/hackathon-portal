@@ -69,3 +69,22 @@ exports.markAllAsRead = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error marking all notifications as read' });
     }
 };
+
+// @desc    Delete a notification
+// @route   DELETE /api/notifications/:id
+// @access  Private
+exports.deleteNotification = async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.user_id;
+    try {
+        const [rows] = await db.query('SELECT user_id FROM Notifications WHERE notification_id = ?', [id]);
+        if (rows.length === 0) return res.status(404).json({ success: false, message: 'Notification not found' });
+        if (rows[0].user_id !== userId) return res.status(403).json({ success: false, message: 'Access denied' });
+
+        await db.query('DELETE FROM Notifications WHERE notification_id = ?', [id]);
+        res.status(200).json({ success: true, message: 'Notification deleted' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Server error deleting notification' });
+    }
+};

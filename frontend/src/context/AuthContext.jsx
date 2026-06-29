@@ -1,23 +1,97 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useEffect, useContext, useCallback, useMemo } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext();
 
-// Create configured Axios instance
-export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
-});
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
-// Request interceptor to automatically add authorization header
+// Create configured Axios instance
+export const api = axios.create({ baseURL: BASE_URL });
+
+// Role-based home routes
+export const ROLE_HOME = {
+  Student: '/dashboard',
+  Leader: '/dashboard',
+  Judge: '/judge',
+  Manager: '/manager',
+  Admin: '/admin',
+};
+
+// Attach access token to every request automatically
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
   (error) => Promise.reject(error)
+);
+
+// Auto-refresh access token on 401 responses
+let isRefreshing = false;
+let failedQueue = [];
+
+const processQueue = (error, token = null) => {
+  failedQueue.forEach((prom) => {
+    if (error) prom.reject(error);
+    else prom.resolve(token);
+  });
+  failedQueue = [];
+};
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      if (isRefreshing) {
+        return new Promise((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((token) => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return api(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      const refreshToken = localStorage.getItem('refreshToken');
+
+      if (!refreshToken) {
+        isRefreshing = false;
+        processQueue(new Error('No refresh token'));
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(error);
+      }
+
+      try {
+        const res = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken });
+        const { token, refreshToken: newRefreshToken } = res.data;
+        localStorage.setItem('token', token);
+        localStorage.setItem('refreshToken', newRefreshToken);
+        api.defaults.headers.common.Authorization = `Bearer ${token}`;
+        processQueue(null, token);
+        originalRequest.headers.Authorization = `Bearer ${token}`;
+        return api(originalRequest);
+      } catch (err) {
+        processQueue(err, null);
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+        window.location.href = '/login';
+        return Promise.reject(err);
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    return Promise.reject(error);
+  }
 );
 
 export const AuthProvider = ({ children }) => {
@@ -25,7 +99,7 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Load user data on startup if token exists
+  // Load user on startup if token exists
   useEffect(() => {
     const loadUser = async () => {
       const token = localStorage.getItem('token');
@@ -37,8 +111,9 @@ export const AuthProvider = ({ children }) => {
         const res = await api.get('/auth/me');
         setUser(res.data.user);
       } catch (err) {
-        console.error('Failed to load user', err);
+        console.error('Failed to load user:', err);
         localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
         setUser(null);
       } finally {
         setLoading(false);
@@ -47,58 +122,80 @@ export const AuthProvider = ({ children }) => {
     loadUser();
   }, []);
 
-  // Register action
-  const registerUser = async (userData) => {
-    setLoading(true);
+  const registerUser = useCallback(async (userData) => {
     setError(null);
     try {
       const res = await api.post('/auth/register', userData);
-      localStorage.setItem('token', res.data.token);
-      setUser(res.data.user);
-      return { success: true };
+      const { token, refreshToken, user: userObj } = res.data;
+      localStorage.setItem('token', token);
+      localStorage.setItem('refreshToken', refreshToken);
+      setUser(userObj);
+      return { success: true, user: userObj };
     } catch (err) {
       const msg = err.response?.data?.message || 'Registration failed';
       setError(msg);
-      setLoading(false);
       return { success: false, message: msg };
     }
-  };
+  }, []);
 
-  // Login action
-  const loginUser = async (credentials) => {
-    setLoading(true);
+  const loginUser = useCallback(async (credentials) => {
     setError(null);
     try {
       const res = await api.post('/auth/login', credentials);
-      localStorage.setItem('token', res.data.token);
-      setUser(res.data.user);
-      return { success: true };
+      const { token, refreshToken, user: userObj } = res.data;
+      localStorage.setItem('token', token);
+      localStorage.setItem('refreshToken', refreshToken);
+      setUser(userObj);
+      return { success: true, user: userObj };
     } catch (err) {
       const msg = err.response?.data?.message || 'Login failed';
       setError(msg);
-      setLoading(false);
       return { success: false, message: msg };
     }
-  };
+  }, []);
 
-  // Logout action
-  const logoutUser = () => {
+  const logoutUser = useCallback(async () => {
+    try {
+      const refreshToken = localStorage.getItem('refreshToken');
+      await api.post('/auth/logout', { refreshToken });
+    } catch (_) {}
     localStorage.removeItem('token');
+    localStorage.removeItem('refreshToken');
     setUser(null);
-  };
+  }, []);
+
+  const forgotPassword = useCallback(async (email) => {
+    try {
+      const res = await api.post('/auth/forgot-password', { email });
+      return { success: true, message: res.data.message };
+    } catch (err) {
+      return { success: false, message: err.response?.data?.message || 'Failed to send reset email' };
+    }
+  }, []);
+
+  const resetPassword = useCallback(async (token, password) => {
+    try {
+      const res = await api.post('/auth/reset-password', { token, password });
+      return { success: true, message: res.data.message };
+    } catch (err) {
+      return { success: false, message: err.response?.data?.message || 'Failed to reset password' };
+    }
+  }, []);
+
+  const contextValue = useMemo(() => ({
+    user,
+    loading,
+    error,
+    registerUser,
+    loginUser,
+    logoutUser,
+    forgotPassword,
+    resetPassword,
+    setUser,
+  }), [user, loading, error, registerUser, loginUser, logoutUser, forgotPassword, resetPassword]);
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        loading,
-        error,
-        registerUser,
-        loginUser,
-        logoutUser,
-        setUser
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );
