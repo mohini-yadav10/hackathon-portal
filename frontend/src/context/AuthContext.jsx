@@ -3,11 +3,13 @@ import axios from 'axios';
 
 const AuthContext = createContext();
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  "https://hackathon-portal-production.up.railway.app";
 
 // Create configured Axios instance
-export const api = axios.create({ baseURL: BASE_URL });
-
+export const api = axios.create({ baseURL: API_URL });
 // Role-based home routes
 export const ROLE_HOME = {
   Student: '/dashboard',

@@ -213,7 +213,7 @@ const Profile = () => {
   // Helper to build full file url from backend paths
   const getFullUrl = (path) => {
     if (!path) return '';
-    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const baseUrl = import.meta.env.VITE_API_URL || 'https://hackathon-portal-production.up.railway.app';
     return `${baseUrl}${path}`;
   };
 
