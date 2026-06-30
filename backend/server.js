@@ -10,8 +10,16 @@ require('./config/db');
 const app = express();
 
 // Middlewares
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://dulcet-kitsune-cebf35.netlify.app',
+    'http://localhost:5173',
+    'http://localhost:4173'
+  ],
+  credentials: true
+}));
 app.use(express.json());
+
 
 // Rate Limiter for Authentication endpoints (prevent brute-force)
 const authLimiter = rateLimit({
